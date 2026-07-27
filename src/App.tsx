@@ -18,6 +18,10 @@ type SortKey = keyof Pick<DriverSummary, "name" | "deliveries" | "daysWorked" | 
 const RATE_KEY = "nts-rotas-rate";
 const PROCESSING_STEPS = ["Lendo rotas", "Calculando quilômetros", "Calculando bônus", "Montando dashboard"];
 const pause = (duration: number) => new Promise((resolve) => window.setTimeout(resolve, duration));
+const formatAxisKm = (value: number) => `${new Intl.NumberFormat("pt-BR", {
+  notation: "compact",
+  maximumFractionDigits: 1,
+}).format(value)} km`;
 
 export default function Home() {
   const inputRef = useRef<HTMLInputElement>(null);
@@ -204,10 +208,10 @@ export default function Home() {
         <section className="mt-6 grid gap-6 xl:grid-cols-2">
           <ChartCard title="Ranking de quilômetros" subtitle="Comparativo por motoboy">
             <ResponsiveContainer width="100%" height={290}>
-              <BarChart data={result.drivers} layout="vertical" margin={{ left: 8, right: 25 }}>
+              <BarChart data={result.drivers} layout="vertical" margin={{ left: 8, right: 32 }}>
                 <CartesianGrid stroke="#e8edf4" horizontal={false} />
-                <XAxis type="number" tickFormatter={(v) => `${v} km`} tick={{ fill: "#75839a", fontSize: 12 }} axisLine={false} tickLine={false} />
-                <YAxis type="category" dataKey="name" width={140} tick={{ fill: "#34445e", fontSize: 12 }} axisLine={false} tickLine={false} />
+                <XAxis type="number" tickFormatter={(value) => formatAxisKm(Number(value))} tick={{ fill: "#75839a", fontSize: 11 }} axisLine={false} tickLine={false} />
+                <YAxis type="category" dataKey="name" width={132} tick={<DriverAxisTick />} axisLine={false} tickLine={false} />
                 <Tooltip
                   formatter={(value) => [formatKm(Number(value)), "Quilometragem válida"]}
                   labelFormatter={(label) => `Motoboy: ${label}`}
@@ -223,7 +227,7 @@ export default function Home() {
                 <defs><linearGradient id="kmFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#2b7de1" stopOpacity={0.28} /><stop offset="100%" stopColor="#2b7de1" stopOpacity={0.02} /></linearGradient></defs>
                 <CartesianGrid stroke="#e8edf4" vertical={false} />
                 <XAxis dataKey="label" tick={{ fill: "#75839a", fontSize: 12 }} axisLine={false} tickLine={false} />
-                <YAxis tickFormatter={(v) => `${v}`} tick={{ fill: "#75839a", fontSize: 12 }} axisLine={false} tickLine={false} width={45} />
+                <YAxis tickFormatter={(value) => formatAxisKm(Number(value))} tick={{ fill: "#75839a", fontSize: 11 }} axisLine={false} tickLine={false} width={70} />
                 <Tooltip
                   formatter={(value) => [formatKm(Number(value)), "Quilometragem válida"]}
                   labelFormatter={(label) => `Data: ${label}`}
@@ -240,7 +244,7 @@ export default function Home() {
             <label className="search-box"><Search size={16} /><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Buscar motoboy" /></label>
           </div>
           <div className="overflow-x-auto">
-            <table>
+            <table className="driver-table">
               <thead><tr>
                 <th>#</th>
                 <Sortable label="Motoboy" column="name" sort={sort} onSort={changeSort} />
@@ -255,13 +259,13 @@ export default function Home() {
               <tbody>{sortedDrivers.map((driver, index) => (
                 <tr key={driver.name} onClick={() => setSelected(driver)}>
                   <td><span className={`rank ${index < 3 ? "top" : ""}`}>{index + 1}</span></td>
-                  <td className="font-medium text-[#172943]">{driver.name}</td>
+                  <td className="driver-name-cell font-medium text-[#172943]" title={driver.name}>{driver.name}</td>
                   <td>{driver.deliveries.toLocaleString("pt-BR")}</td>
                   <td>{driver.daysWorked.toLocaleString("pt-BR")}</td>
-                  <td className="font-semibold text-[#172943]">{formatKm(driver.validKm)}</td>
-                  <td>{formatKm(driver.dailyAverage)}</td>
-                  <td>{formatBRL(rate)}</td>
-                  <td className="font-semibold text-[#0c60cb]">{formatBRL(driver.bonus)}</td>
+                  <td className="numeric-cell font-semibold text-[#172943]">{formatKm(driver.validKm)}</td>
+                  <td className="numeric-cell">{formatKm(driver.dailyAverage)}</td>
+                  <td className="numeric-cell">{formatBRL(rate)}</td>
+                  <td className="numeric-cell font-semibold text-[#0c60cb]">{formatBRL(driver.bonus)}</td>
                   <td><ChevronRight size={17} /></td>
                 </tr>
               ))}</tbody>
@@ -305,6 +309,22 @@ function Metric({ icon, label, value, helper, accent = false, wide = false }: { 
 
 function ChartCard({ title, subtitle, children }: { title: string; subtitle: string; children: React.ReactNode }) {
   return <div className="panel p-5"><h2 className="panel-title">{title}</h2><p className="panel-subtitle mb-6">{subtitle}</p>{children}</div>;
+}
+
+function DriverAxisTick({ x = 0, y = 0, payload }: { x?: number; y?: number; payload?: { value?: string } }) {
+  const name = String(payload?.value ?? "");
+  const words = name.replace(" - ", " ").split(/\s+/);
+  const lines = words.reduce<string[]>((result, word) => {
+    const current = result.at(-1);
+    if (!current || `${current} ${word}`.length > 17) result.push(word);
+    else result[result.length - 1] = `${current} ${word}`;
+    return result;
+  }, []).slice(0, 3);
+  return <g transform={`translate(${x},${y})`}>
+    <text x={-8} y={lines.length === 3 ? -12 : lines.length === 2 ? -5 : 4} textAnchor="end" fill="#34445e" fontSize={11}>
+      {lines.map((line, index) => <tspan key={`${line}-${index}`} x={-8} dy={index === 0 ? 0 : 13}>{line}</tspan>)}
+    </text>
+  </g>;
 }
 
 function Sortable({ label, column, sort, onSort }: { label: string; column: SortKey; sort: { key: SortKey; direction: string }; onSort: (key: SortKey) => void }) {
