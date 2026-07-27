@@ -176,8 +176,12 @@ export default function Home() {
               <BarChart data={result.drivers} layout="vertical" margin={{ left: 8, right: 25 }}>
                 <CartesianGrid stroke="#e8edf4" horizontal={false} />
                 <XAxis type="number" tickFormatter={(v) => `${v} km`} tick={{ fill: "#75839a", fontSize: 12 }} axisLine={false} tickLine={false} />
-                <YAxis type="category" dataKey="name" width={105} tick={{ fill: "#34445e", fontSize: 12 }} axisLine={false} tickLine={false} />
-                <Tooltip formatter={(value) => formatKm(Number(value))} cursor={{ fill: "#f4f7fb" }} />
+                <YAxis type="category" dataKey="name" width={140} tick={{ fill: "#34445e", fontSize: 12 }} axisLine={false} tickLine={false} />
+                <Tooltip
+                  formatter={(value) => [formatKm(Number(value)), "Quilometragem válida"]}
+                  labelFormatter={(label) => `Motoboy: ${label}`}
+                  cursor={{ fill: "#f4f7fb" }}
+                />
                 <Bar dataKey="validKm" fill="#1267d6" radius={[0, 6, 6, 0]} barSize={22} />
               </BarChart>
             </ResponsiveContainer>
@@ -189,7 +193,10 @@ export default function Home() {
                 <CartesianGrid stroke="#e8edf4" vertical={false} />
                 <XAxis dataKey="label" tick={{ fill: "#75839a", fontSize: 12 }} axisLine={false} tickLine={false} />
                 <YAxis tickFormatter={(v) => `${v}`} tick={{ fill: "#75839a", fontSize: 12 }} axisLine={false} tickLine={false} width={45} />
-                <Tooltip formatter={(value) => formatKm(Number(value))} />
+                <Tooltip
+                  formatter={(value) => [formatKm(Number(value)), "Quilometragem válida"]}
+                  labelFormatter={(label) => `Data: ${label}`}
+                />
                 <Area type="monotone" dataKey="km" stroke="#1267d6" strokeWidth={2.5} fill="url(#kmFill)" />
               </AreaChart>
             </ResponsiveContainer>
@@ -242,6 +249,7 @@ export default function Home() {
             <AuditItem label="Distância vazia" value={audit.emptyDistance} />
             <AuditItem label="Distância inválida" value={audit.invalidDistance} />
             <AuditItem label="Distância negativa" value={audit.negativeDistance} />
+            <AuditItem label="Registros duplicados" value={audit.duplicateRecords} />
           </div>}
         </section>
       </div>
@@ -276,7 +284,7 @@ function AuditItem({ label, value, tone }: { label: string; value: number; tone?
 
 function RateModal({ value, onChange, onCancel, onApply }: { value: string; onChange: (value: string) => void; onCancel: () => void; onApply: () => void }) {
   return <div className="modal-backdrop" onMouseDown={onCancel}><div className="modal-card" onMouseDown={(e) => e.stopPropagation()} role="dialog" aria-modal="true">
-    <div className="flex items-start justify-between"><div><h2>Editar valor por quilômetro</h2><p>O bônus de todos os motoboys será recalculado.</p></div><button className="icon-btn" onClick={onCancel}><X size={19} /></button></div>
+    <div className="flex items-start justify-between"><div><h2>Editar valor por quilômetro</h2><p>O bônus de todos os motoboys será recalculado.</p></div><button className="icon-btn" onClick={onCancel} aria-label="Fechar edição"><X size={19} /></button></div>
     <label className="money-field"><span>Valor por km</span><div><b>R$</b><input autoFocus inputMode="decimal" value={value} onChange={(e) => onChange(e.target.value)} /></div></label>
     <div className="mt-6 flex justify-end gap-3"><button className="secondary-btn" onClick={onCancel}>Cancelar</button><button className="primary-btn" onClick={onApply}>Aplicar</button></div>
   </div></div>;
@@ -284,11 +292,11 @@ function RateModal({ value, onChange, onCancel, onApply }: { value: string; onCh
 
 function DriverDrawer({ driver, rate, records, onClose }: { driver: DriverSummary; rate: number; records: ProcessedRecord[]; onClose: () => void }) {
   return <div className="drawer-backdrop" onMouseDown={onClose}><aside className="drawer" onMouseDown={(e) => e.stopPropagation()}>
-    <div className="drawer-header"><div><span>Detalhamento do motoboy</span><h2>{driver.name}</h2></div><button className="icon-btn" onClick={onClose}><X size={20} /></button></div>
+    <div className="drawer-header"><div><span>Detalhamento do motoboy</span><h2>{driver.name}</h2></div><button className="icon-btn" onClick={onClose} aria-label="Fechar detalhamento"><X size={20} /></button></div>
     <div className="drawer-body">
       <div className="drawer-metrics"><div><span>Km válidos</span><strong>{formatKm(driver.validKm)}</strong></div><div className="blue"><span>Bônus</span><strong>{formatBRL(driver.bonus)}</strong></div><div><span>Entregas</span><strong>{driver.deliveries}</strong></div><div><span>Dias trabalhados</span><strong>{driver.daysWorked}</strong></div><div><span>Média diária</span><strong>{formatKm(driver.dailyAverage)}</strong></div><div><span>Valor/km</span><strong>{formatBRL(rate)}</strong></div></div>
       <h3>Evolução diária</h3>
-      <div className="h-56"><ResponsiveContainer width="100%" height="100%"><AreaChart data={driver.daily}><CartesianGrid stroke="#e8edf4" vertical={false} /><XAxis dataKey="label" tick={{ fontSize: 11 }} axisLine={false} tickLine={false} /><YAxis tick={{ fontSize: 11 }} axisLine={false} tickLine={false} width={38} /><Tooltip formatter={(v) => formatKm(Number(v))} /><Area type="monotone" dataKey="km" stroke="#1267d6" strokeWidth={2} fill="#dcecff" /></AreaChart></ResponsiveContainer></div>
+      <div className="h-56"><ResponsiveContainer width="100%" height="100%"><AreaChart data={driver.daily}><CartesianGrid stroke="#e8edf4" vertical={false} /><XAxis dataKey="label" tick={{ fontSize: 11 }} axisLine={false} tickLine={false} /><YAxis tick={{ fontSize: 11 }} axisLine={false} tickLine={false} width={38} /><Tooltip formatter={(v) => [formatKm(Number(v)), "Quilometragem válida"]} labelFormatter={(label) => `Data: ${label}`} /><Area type="monotone" dataKey="km" stroke="#1267d6" strokeWidth={2} fill="#dcecff" /></AreaChart></ResponsiveContainer></div>
       <h3 className="mt-7">Registros considerados</h3>
       <div className="drawer-table"><table><thead><tr><th>Data</th><th>Rota</th><th>Parada</th><th>Km</th></tr></thead><tbody>{records.map((record) => <tr key={record.rowNumber}><td>{formatDateBR(record.date)}</td><td>{record.route || "—"}</td><td>{record.stopNumber ?? "Trecho de base"}</td><td>{formatKm(record.distance)}</td></tr>)}</tbody></table></div>
     </div>

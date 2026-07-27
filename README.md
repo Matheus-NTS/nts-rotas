@@ -27,6 +27,9 @@ pnpm build
 - Usa `status = completed` quando essa coluna existe.
 - O export atual de referência não possui `status`; nele, a conclusão é representada exatamente por `stop_state = delivered`. Esse schema é detectado automaticamente.
 - Distâncias vazias, inválidas e negativas são excluídas e auditadas.
+- Entregas são identificadas por `tracking_code`; os trechos de base não possuem esse código e não aumentam o total de entregas.
+- Registros repetidos são excluídos por `tracking_code` ou, nos trechos de base, pela identidade composta de motoboy, rota, data, parada, estado, distância e endereço.
+- Nomes de motoboys são normalizados para evitar duplicação por espaços, caixa ou acentuação simples.
 - O valor por quilômetro começa em R$ 0,25, é editável e fica salvo no navegador.
 - Exportação com quatro abas: resumo, detalhamento diário, registros considerados e desconsiderados.
 

@@ -46,6 +46,7 @@ export type ClosingResult = {
     emptyDistance: number;
     invalidDistance: number;
     negativeDistance: number;
+    duplicateRecords: number;
   };
 };
 
@@ -59,6 +60,17 @@ export function parseWorkbookRows(workbook: XLSX.WorkBook): RawRow[] {
 
 function asText(value: unknown): string {
   return value === null || value === undefined ? "" : String(value).trim();
+}
+
+export function normalizeDriverName(value: unknown): string {
+  return asText(value).replace(/\s+/g, " ");
+}
+
+function driverKey(value: unknown): string {
+  return normalizeDriverName(value)
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLocaleLowerCase("pt-BR");
 }
 
 function parseDistance(value: unknown): number | null {
@@ -110,18 +122,24 @@ function resolveSchema(rows: RawRow[]) {
 export function calculateClosing(rows: RawRow[], rate: number, fileName = "fechamento.xlsx"): ClosingResult {
   if (!rows.length) throw new Error("O Excel está vazio.");
   const schema = resolveSchema(rows);
-  const audit = { included: 0, totalExcluded: 0, statusExcluded: 0, emptyDistance: 0, invalidDistance: 0, negativeDistance: 0 };
+  const audit = { included: 0, totalExcluded: 0, statusExcluded: 0, emptyDistance: 0, invalidDistance: 0, negativeDistance: 0, duplicateRecords: 0 };
   const includedRecords: ProcessedRecord[] = [];
   const excludedRecords: (ProcessedRecord & { exclusionReason: string })[] = [];
+  const seenRecords = new Set<string>();
+  const preferredDriverNames = new Map<string, string>();
 
   rows.forEach((row, index) => {
     const status = asText(row[schema.statusColumn]);
     const distanceValue = row.distance_km;
     const distance = parseDistance(distanceValue);
     const date = parseDate(schema.dateColumn ? row[schema.dateColumn] : null);
+    const normalizedDriver = normalizeDriverName(row.driver) || "Motoboy não informado";
+    const normalizedDriverKey = driverKey(normalizedDriver);
+    const preferredDriver = preferredDriverNames.get(normalizedDriverKey) ?? normalizedDriver;
+    preferredDriverNames.set(normalizedDriverKey, preferredDriver);
     const record: ProcessedRecord = {
       rowNumber: index + 2,
-      driver: asText(row.driver) || "Motoboy não informado",
+      driver: preferredDriver,
       status,
       distance: typeof distance === "number" && Number.isFinite(distance) ? distance : 0,
       date,
@@ -145,6 +163,26 @@ export function calculateClosing(rows: RawRow[], rate: number, fileName = "fecha
       audit.negativeDistance++;
       reason = "Distância negativa";
     }
+    if (!reason) {
+      const identity = record.trackingCode
+        ? `tracking:${record.trackingCode.toLocaleLowerCase("pt-BR")}`
+        : [
+            "leg",
+            normalizedDriverKey,
+            record.route.toLocaleLowerCase("pt-BR"),
+            record.dateKey,
+            String(record.stopNumber ?? "base"),
+            record.status,
+            record.distance.toFixed(6),
+            asText(row.address).toLocaleLowerCase("pt-BR"),
+          ].join("|");
+      if (seenRecords.has(identity)) {
+        audit.duplicateRecords++;
+        reason = "Registro duplicado";
+      } else {
+        seenRecords.add(identity);
+      }
+    }
     if (reason) excludedRecords.push({ ...record, exclusionReason: reason });
     else includedRecords.push(record);
   });
@@ -154,6 +192,7 @@ export function calculateClosing(rows: RawRow[], rate: number, fileName = "fecha
   const byDriver = new Map<string, ProcessedRecord[]>();
   includedRecords.forEach((record) => byDriver.set(record.driver, [...(byDriver.get(record.driver) ?? []), record]));
 
+  const kmRemainders = new Map<string, number>();
   const drivers = [...byDriver.entries()].map(([name, records]) => {
     const days = new Map<string, number>();
     records.forEach((record) => {
@@ -162,18 +201,51 @@ export function calculateClosing(rows: RawRow[], rate: number, fileName = "fecha
     const daily = [...days.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([key, km]) => ({
       dateKey: key, label: formatShortDate(key), km: round(km),
     }));
-    const validKm = round(records.reduce((sum, record) => sum + record.distance, 0));
+    const exactKm = records.reduce((sum, record) => sum + record.distance, 0);
+    const validKm = round(exactKm);
     const deliveries = new Set(records.filter((record) => record.trackingCode).map((record) => record.trackingCode)).size;
+    kmRemainders.set(name, exactKm - validKm);
     return {
       name,
       deliveries,
       daysWorked: days.size,
       validKm,
       dailyAverage: round(days.size ? validKm / days.size : 0),
-      bonus: roundMoney(validKm * rate),
+      bonus: 0,
       daily,
     };
   }).sort((a, b) => b.validKm - a.validKm);
+
+  const totalKm = round(includedRecords.reduce((sum, record) => sum + record.distance, 0));
+  const roundedDriverKmTotal = round(drivers.reduce((sum, driver) => sum + driver.validKm, 0));
+  const kmDifference = round(totalKm - roundedDriverKmTotal);
+  if (drivers.length && kmDifference !== 0) {
+    const correctionTarget = [...drivers].sort((a, b) => {
+      const left = kmRemainders.get(a.name) ?? 0;
+      const right = kmRemainders.get(b.name) ?? 0;
+      return kmDifference > 0 ? right - left : left - right;
+    })[0];
+    correctionTarget.validKm = round(correctionTarget.validKm + kmDifference);
+    correctionTarget.dailyAverage = round(correctionTarget.daysWorked ? correctionTarget.validKm / correctionTarget.daysWorked : 0);
+  }
+
+  const bonusRemainders = new Map<string, number>();
+  drivers.forEach((driver) => {
+    const exactBonus = driver.validKm * rate;
+    driver.bonus = roundMoney(exactBonus);
+    bonusRemainders.set(driver.name, exactBonus - driver.bonus);
+  });
+  const totalBonus = roundMoney(totalKm * rate);
+  const roundedDriverBonusTotal = roundMoney(drivers.reduce((sum, driver) => sum + driver.bonus, 0));
+  const roundingDifference = roundMoney(totalBonus - roundedDriverBonusTotal);
+  if (drivers.length && roundingDifference !== 0) {
+    const correctionTarget = [...drivers].sort((a, b) => {
+      const left = bonusRemainders.get(a.name) ?? 0;
+      const right = bonusRemainders.get(b.name) ?? 0;
+      return roundingDifference > 0 ? right - left : left - right;
+    })[0];
+    correctionTarget.bonus = roundMoney(correctionTarget.bonus + roundingDifference);
+  }
 
   const allDays = new Map<string, number>();
   includedRecords.forEach((record) => {
@@ -183,14 +255,12 @@ export function calculateClosing(rows: RawRow[], rate: number, fileName = "fecha
     dateKey: key, label: formatShortDate(key), km: round(km),
   }));
   const dates = includedRecords.map((record) => record.date).filter((date): date is Date => Boolean(date)).sort((a, b) => a.getTime() - b.getTime());
-  const totalKm = round(includedRecords.reduce((sum, record) => sum + record.distance, 0));
-
   return {
     fileName,
     sourceRows: rows,
     totalRows: rows.length,
     totalKm,
-    totalBonus: roundMoney(totalKm * rate),
+    totalBonus,
     totalDeliveries: drivers.reduce((sum, driver) => sum + driver.deliveries, 0),
     workDays: allDays.size,
     periodLabel: dates.length ? `${formatDateBR(dates[0])} – ${formatDateBR(dates[dates.length - 1])}` : "Período não identificado",
@@ -214,6 +284,11 @@ export function formatKm(value: number) { return `${value.toLocaleString("pt-BR"
 export function formatBRL(value: number) { return value.toLocaleString("pt-BR", { style: "currency", currency: "BRL" }); }
 
 export function exportClosing(result: ClosingResult, rate: number) {
+  const workbook = buildClosingWorkbook(result, rate);
+  XLSX.writeFile(workbook, `NTS_Rotas_${new Date().toISOString().slice(0, 10)}.xlsx`, { cellDates: true });
+}
+
+export function buildClosingWorkbook(result: ClosingResult, rate: number) {
   const workbook = XLSX.utils.book_new();
   const summary = result.drivers.map((driver, index) => ({
     Posição: index + 1, Motoboy: driver.name, "Entregas concluídas": driver.deliveries,
@@ -221,16 +296,16 @@ export function exportClosing(result: ClosingResult, rate: number) {
     "Média diária": driver.dailyAverage, "Valor por quilômetro": rate, Bônus: driver.bonus,
   }));
   const daily = result.drivers.flatMap((driver) => driver.daily.map((day) => ({
-    Data: day.dateKey ? new Date(`${day.dateKey}T12:00:00`) : "", Motoboy: driver.name,
+    Data: day.dateKey ? formatDateBR(new Date(`${day.dateKey}T12:00:00`)) : "", Motoboy: driver.name,
     "Quilômetros válidos": day.km, "Valor por quilômetro": rate, Bônus: roundMoney(day.km * rate),
   })));
   const considered = result.includedRecords.map((record) => ({
-    Linha: record.rowNumber, Data: record.date ?? "", Motoboy: record.driver, Rota: record.route,
+    Linha: record.rowNumber, Data: formatDateBR(record.date), Motoboy: record.driver, Rota: record.route,
     Parada: record.stopNumber ?? "Trecho de base", Status: record.status,
     "Distância (km)": record.distance, "Código de rastreio": record.trackingCode,
   }));
   const disregarded = result.excludedRecords.map((record) => ({
-    Linha: record.rowNumber, Data: record.date ?? "", Motoboy: record.driver, Rota: record.route,
+    Linha: record.rowNumber, Data: formatDateBR(record.date), Motoboy: record.driver, Rota: record.route,
     Status: record.status, "Distância original": record.original.distance_km ?? "", Motivo: record.exclusionReason,
   }));
   [
@@ -249,9 +324,9 @@ export function exportClosing(result: ClosingResult, rate: number) {
       if (cell.t === "d") cell.z = "dd/mm/yyyy";
       const header = worksheet[`${address.replace(/\d+/, "")}1`]?.v;
       if (header === "Bônus" || header === "Valor por quilômetro") cell.z = '"R$" #,##0.00';
-      if (String(header).includes("Quilômetros") || header === "Média diária" || header === "Distância (km)") cell.z = '#,##0.000';
+      if (String(header).includes("Quilômetros") || header === "Média diária" || header === "Distância (km)") cell.z = '#,##0.00';
     });
     XLSX.utils.book_append_sheet(workbook, worksheet, name as string);
   });
-  XLSX.writeFile(workbook, `NTS_Rotas_${new Date().toISOString().slice(0, 10)}.xlsx`, { cellDates: true });
+  return workbook;
 }
