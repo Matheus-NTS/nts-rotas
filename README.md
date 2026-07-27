@@ -1,39 +1,91 @@
 # NTS Rotas
 
-Plataforma web para importar o Excel do Spoke Dispatch, calcular a quilometragem válida e o bônus dos motoboys e exportar o fechamento.
+Plataforma web da NTS para importar relatórios do Spoke Dispatch, calcular a quilometragem válida e o bônus dos motoboys e exportar o fechamento do período.
 
-## Executar localmente
+Todo o processamento acontece diretamente no navegador. O projeto não possui backend, banco de dados, autenticação, SSR ou envio do Excel para servidores.
 
-Requisitos: Node.js 22 ou superior.
+## Tecnologias utilizadas
+
+- React
+- TypeScript
+- Vite
+- Tailwind CSS
+- Recharts
+- SheetJS (`xlsx`)
+- Vitest
+
+## Como executar localmente
+
+Requisito: Node.js 22 ou superior.
 
 ```bash
 pnpm install
 pnpm dev
 ```
 
-Abra o endereço exibido no terminal, selecione um arquivo `.xlsx` ou `.xls` e confira o fechamento.
+Abra o endereço exibido pelo Vite e selecione um arquivo `.xlsx` ou `.xls`.
 
-## Testes e build
+Para executar os testes e validar o build:
 
 ```bash
 pnpm test
-pnpm build
+pnpm run build
 pnpm preview
 ```
 
-## Regras implementadas
+O build de produção é gerado na pasta `dist`.
 
-- Processamento integralmente no navegador, sem backend ou banco de dados.
-- Usa `distance_km` por trecho da rota. Trechos de saída e retorno à base são mantidos; não são totais duplicados.
-- Usa `status = completed` quando essa coluna existe.
-- O export atual de referência não possui `status`; nele, a conclusão é representada exatamente por `stop_state = delivered`. Esse schema é detectado automaticamente.
-- Distâncias vazias, inválidas e negativas são excluídas e auditadas.
-- Entregas são identificadas por `tracking_code`; os trechos de base não possuem esse código e não aumentam o total de entregas.
-- Registros repetidos são excluídos por `tracking_code` ou, nos trechos de base, pela identidade composta de motoboy, rota, data, parada, estado, distância e endereço.
-- Nomes de motoboys são normalizados para evitar duplicação por espaços, caixa ou acentuação simples.
-- O valor por quilômetro começa em R$ 0,25, é editável e fica salvo no navegador.
-- Exportação com quatro abas: resumo, detalhamento diário, registros considerados e desconsiderados.
+## Como publicar na Vercel
 
-## Publicar na Vercel
+1. Importe o repositório na Vercel.
+2. Selecione Vite como framework.
+3. Use `pnpm run build` como comando de build.
+4. Use `dist` como diretório de saída.
+5. Não configure variáveis de ambiente.
 
-Importe o repositório na Vercel, use o comando de build `pnpm build` e o diretório de saída `dist`. A aplicação é uma SPA estática criada com React e Vite, sem SSR, backend ou variáveis de ambiente.
+O arquivo `vercel.json` direciona rotas da SPA para `index.html`.
+
+## Estrutura de pastas
+
+```text
+src/
+  App.tsx          Interface e interações
+  index.css        Identidade visual e responsividade
+  main.tsx         Entrada da aplicação React
+lib/
+  closing.ts       Leitura, tratamento, cálculos e exportação
+  closing.test.ts  Testes das regras principais
+  reference-data.test.ts  Homologação com o Excel de referência
+public/            Favicon e arquivos públicos
+dist/              Build estático gerado pelo Vite
+```
+
+## Regras de negócio
+
+- A distância é lida de `distance_km`.
+- No export atual do Spoke, somente `stop_state = delivered` é considerado concluído.
+- Quando o arquivo utiliza o schema alternativo, somente `status = completed` é considerado concluído.
+- Outros estados são excluídos.
+- Distâncias vazias, inválidas ou negativas são excluídas e auditadas.
+- Entregas são identificadas por `tracking_code`.
+- Trechos de saída e retorno à base sem `tracking_code` entram na quilometragem, mas não aumentam o total de entregas.
+- Registros duplicados são desconsiderados.
+- Nomes de motoboys são normalizados para evitar duplicação por espaços, caixa ou acentuação equivalente.
+- O bônus é a quilometragem válida multiplicada pelo valor vigente por quilômetro.
+- O valor inicial é R$ 0,25 por quilômetro e fica salvo no `localStorage`.
+
+## Fluxo do usuário
+
+1. Acessar a plataforma.
+2. Selecionar ou arrastar o Excel exportado do Spoke.
+3. Aguardar o processamento local.
+4. Conferir indicadores, ranking, evolução diária e auditoria.
+5. Pesquisar, ordenar ou abrir o detalhamento de um motoboy.
+6. Ajustar o valor por quilômetro, se necessário.
+7. Exportar o fechamento em Excel.
+
+## Versão atual
+
+Versão 1.0.1 — polimento da interface e documentação da versão aprovada.
+
+Consulte o [CHANGELOG.md](./CHANGELOG.md) para o histórico publicado.

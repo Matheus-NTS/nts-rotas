@@ -4,7 +4,7 @@ import {
   Tooltip, XAxis, YAxis,
 } from "recharts";
 import {
-  Bike, CalendarDays, ChevronDown, ChevronRight, Download, FileCheck2,
+  Bike, CalendarDays, CheckCircle2, ChevronDown, ChevronRight, Download, FileCheck2,
   FileSpreadsheet, Gauge, Info, Pencil, Route, Search, Upload, Users, X,
 } from "lucide-react";
 import * as XLSX from "xlsx";
@@ -16,6 +16,8 @@ import {
 type SortKey = keyof Pick<DriverSummary, "name" | "deliveries" | "daysWorked" | "validKm" | "dailyAverage" | "bonus">;
 
 const RATE_KEY = "nts-rotas-rate";
+const PROCESSING_STEPS = ["Lendo rotas", "Calculando quilômetros", "Calculando bônus", "Montando dashboard"];
+const pause = (duration: number) => new Promise((resolve) => window.setTimeout(resolve, duration));
 
 export default function Home() {
   const inputRef = useRef<HTMLInputElement>(null);
@@ -27,6 +29,9 @@ export default function Home() {
   const [rateModal, setRateModal] = useState(false);
   const [selected, setSelected] = useState<DriverSummary | null>(null);
   const [auditOpen, setAuditOpen] = useState(false);
+  const [replaceModal, setReplaceModal] = useState(false);
+  const [processingStep, setProcessingStep] = useState(-1);
+  const [exportSuccess, setExportSuccess] = useState(false);
   const [error, setError] = useState("");
   const [sort, setSort] = useState<{ key: SortKey; direction: "asc" | "desc" }>({
     key: "validKm", direction: "desc",
@@ -51,18 +56,44 @@ export default function Home() {
       return;
     }
     try {
+      setProcessingStep(0);
       const buffer = await file.arrayBuffer();
+      await pause(260);
+      setProcessingStep(1);
       const workbook = XLSX.read(buffer, { type: "array", cellDates: true });
       const rows = parseWorkbookRows(workbook);
+      await pause(260);
+      setProcessingStep(2);
       const next = calculateClosing(rows, rate, file.name);
+      await pause(260);
+      setProcessingStep(3);
+      await pause(300);
       setFileName(file.name);
       setResult(next);
     } catch (reason) {
       setResult(null);
       setFileName("");
       setError(reason instanceof Error ? reason.message : "Não foi possível ler o arquivo.");
+    } finally {
+      setProcessingStep(-1);
     }
   }, [rate]);
+
+  const handleExport = () => {
+    if (!result) return;
+    exportClosing(result, rate);
+    setExportSuccess(true);
+    window.setTimeout(() => setExportSuccess(false), 3600);
+  };
+
+  const replaceFile = () => {
+    setReplaceModal(false);
+    setResult(null);
+    setFileName("");
+    setError("");
+    setQuery("");
+    setSelected(null);
+  };
 
   const applyRate = () => {
     const parsed = Number(draftRate.replace(/\./g, "").replace(",", "."));
@@ -102,16 +133,17 @@ export default function Home() {
           <div className="grid w-full items-center gap-12 lg:grid-cols-[0.8fr_1.2fr]">
             <div>
               <span className="eyebrow"><span className="status-dot" /> Fechamento de rotas</span>
-              <h1 className="mt-6 text-4xl font-semibold tracking-[-0.04em] text-[#0b1d36] sm:text-5xl">
-                Quilometragem clara.<br />Fechamento sem atrito.
-              </h1>
-              <p className="mt-5 max-w-lg text-lg leading-8 text-[#607089]">
-                Importe o Excel do Spoke e confira quilômetros, entregas e bônus por motoboy em poucos segundos.
+              <h1 className="mt-6 text-4xl font-semibold tracking-[-0.04em] text-[#0b1d36] sm:text-5xl">NTS Rotas</h1>
+              <h2 className="mt-3 text-xl font-semibold text-[#28527f] sm:text-2xl">Gestão Inteligente de Quilometragem</h2>
+              <p className="mt-5 max-w-xl text-base leading-7 text-[#607089] sm:text-lg sm:leading-8">
+                Importe o relatório exportado do Spoke para calcular automaticamente a quilometragem válida, o bônus dos motoboys e gerar o fechamento do período em poucos segundos.
               </p>
-              <div className="mt-8 flex flex-wrap gap-x-6 gap-y-3 text-sm text-[#53647d]">
-                <span className="feature"><FileCheck2 size={17} /> Processamento no navegador</span>
-                <span className="feature"><Gauge size={17} /> Auditoria automática</span>
+              <div className="mt-7 grid gap-3 text-sm text-[#53647d] sm:grid-cols-3 lg:grid-cols-1 xl:grid-cols-3">
+                <span className="feature"><CheckCircle2 size={17} /> Processamento automático</span>
+                <span className="feature"><Gauge size={17} /> Cálculo de bônus</span>
+                <span className="feature"><FileCheck2 size={17} /> Auditoria automática</span>
               </div>
+              <LogisticsIllustration />
             </div>
             <div
               className={`upload-zone ${dragging ? "is-dragging" : ""}`}
@@ -132,6 +164,7 @@ export default function Home() {
           </div>
         </section>
         {rateModal && <RateModal value={draftRate} onChange={setDraftRate} onCancel={() => setRateModal(false)} onApply={applyRate} />}
+        {processingStep >= 0 && <ProcessingOverlay step={processingStep} />}
       </main>
     );
   }
@@ -151,10 +184,10 @@ export default function Home() {
             </p>
           </div>
           <div className="flex flex-wrap gap-3">
-            <button className="secondary-btn" onClick={() => { setResult(null); setFileName(""); setError(""); }}>
+            <button className="secondary-btn" onClick={() => setReplaceModal(true)}>
               <Upload size={17} /> Trocar arquivo
             </button>
-            <button className="primary-btn" onClick={() => exportClosing(result, rate)}>
+            <button className="primary-btn" onClick={handleExport}>
               <Download size={17} /> Exportar fechamento
             </button>
           </div>
@@ -252,7 +285,9 @@ export default function Home() {
         </section>
       </div>
       {rateModal && <RateModal value={draftRate} onChange={setDraftRate} onCancel={() => setRateModal(false)} onApply={applyRate} />}
+      {replaceModal && <ReplaceModal onCancel={() => setReplaceModal(false)} onConfirm={replaceFile} />}
       {selected && <DriverDrawer driver={selected} rate={rate} records={result.includedRecords.filter((r) => r.driver === selected.name)} onClose={() => setSelected(null)} />}
+      {exportSuccess && <div className="success-toast" role="status"><CheckCircle2 size={20} /><span>Fechamento exportado com sucesso.</span></div>}
     </main>
   );
 }
@@ -260,7 +295,7 @@ export default function Home() {
 function Topbar({ rate, onEdit }: { rate: number; onEdit: () => void }) {
   return <header className="topbar"><div className="mx-auto flex h-[82px] max-w-[1480px] items-center justify-between px-5 lg:px-8">
     <div className="flex items-center gap-3"><div className="brand-mark"><Route size={24} /></div><div><div className="brand-name">NTS <span>Rotas</span></div><div className="brand-sub">Gestão de quilometragem</div></div></div>
-    <div className="rate-pill"><div><span>Valor vigente</span><strong>{formatBRL(rate)} <small>por km</small></strong></div><button onClick={onEdit} aria-label="Editar valor por quilômetro"><Pencil size={16} /><span className="hidden sm:inline">Editar valor</span></button></div>
+    <div className="topbar-actions"><div className="release-meta"><strong>Versão 1.0.0</strong><span>Atualizado em 27/07/2026</span></div><div className="rate-pill"><div><span>Valor vigente</span><strong>{formatBRL(rate)} <small>por km</small></strong></div><button onClick={onEdit} aria-label="Editar valor por quilômetro"><Pencil size={16} /><span className="hidden sm:inline">Editar valor</span></button></div></div>
   </div></header>;
 }
 
@@ -278,6 +313,41 @@ function Sortable({ label, column, sort, onSort }: { label: string; column: Sort
 
 function AuditItem({ label, value, tone }: { label: string; value: number; tone?: "green" }) {
   return <div className="audit-item"><span className={tone === "green" ? "success-dot" : "neutral-dot"} /> <div><strong>{value.toLocaleString("pt-BR")}</strong><span>{label}</span></div></div>;
+}
+
+function LogisticsIllustration() {
+  return <div className="logistics-illustration" aria-hidden="true">
+    <span className="route-line" />
+    <span className="illustration-node node-start"><FileSpreadsheet size={18} /></span>
+    <span className="illustration-node node-middle"><Bike size={23} /></span>
+    <span className="illustration-node node-end"><CheckCircle2 size={19} /></span>
+    <span className="illustration-label label-start">Relatório</span>
+    <span className="illustration-label label-middle">Rotas</span>
+    <span className="illustration-label label-end">Fechamento</span>
+  </div>;
+}
+
+function ProcessingOverlay({ step }: { step: number }) {
+  return <div className="processing-backdrop" role="status" aria-live="polite">
+    <div className="processing-card">
+      <div className="processing-spinner"><Route size={24} /></div>
+      <h2>Processando relatório...</h2>
+      <p>{PROCESSING_STEPS[step]}</p>
+      <div className="processing-progress"><span style={{ width: `${((step + 1) / PROCESSING_STEPS.length) * 100}%` }} /></div>
+      <div className="processing-steps">
+        {PROCESSING_STEPS.map((label, index) => <span key={label} className={index <= step ? "active" : ""}><CheckCircle2 size={14} />{label}</span>)}
+      </div>
+    </div>
+  </div>;
+}
+
+function ReplaceModal({ onCancel, onConfirm }: { onCancel: () => void; onConfirm: () => void }) {
+  return <div className="modal-backdrop" onMouseDown={onCancel}><div className="modal-card" onMouseDown={(event) => event.stopPropagation()} role="dialog" aria-modal="true" aria-labelledby="replace-title">
+    <div className="confirm-icon"><Upload size={21} /></div>
+    <h2 id="replace-title" className="mt-4">Deseja substituir o relatório atual?</h2>
+    <p>O dashboard atual será fechado para que você selecione um novo arquivo.</p>
+    <div className="mt-6 flex justify-end gap-3"><button className="secondary-btn" onClick={onCancel}>Cancelar</button><button className="primary-btn" onClick={onConfirm}>Substituir</button></div>
+  </div></div>;
 }
 
 function RateModal({ value, onChange, onCancel, onApply }: { value: string; onChange: (value: string) => void; onCancel: () => void; onApply: () => void }) {
