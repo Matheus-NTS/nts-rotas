@@ -18,6 +18,7 @@ Abra o endereço exibido no terminal, selecione um arquivo `.xlsx` ou `.xls` e c
 ```bash
 pnpm test
 pnpm build
+pnpm preview
 ```
 
 ## Regras implementadas
@@ -35,4 +36,4 @@ pnpm build
 
 ## Publicar na Vercel
 
-Importe o repositório na Vercel e use o comando de build `pnpm build`. Não são necessárias variáveis de ambiente.
+Importe o repositório na Vercel, use o comando de build `pnpm build` e o diretório de saída `dist`. A aplicação é uma SPA estática criada com React e Vite, sem SSR, backend ou variáveis de ambiente.
