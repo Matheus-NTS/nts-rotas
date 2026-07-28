@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import * as XLSX from "xlsx";
-import { buildClosingWorkbook, calculateClosing } from "./closing";
+import { buildClosingWorkbook, calculateClosing, getDriverRateKey } from "./closing";
 
 const base = {
   driver: "Ana", route: "Rota 1", date_attempted_local: "07/15/2026",
@@ -61,6 +61,40 @@ describe("calculateClosing", () => {
     expect(updated.totalBonus).toBe(12);
   });
 
+  it("aplica valor personalizado somente ao motoboy correspondente", () => {
+    const rows = [
+      { ...base, driver: "Ana", stop_state: "delivered", distance_km: 10 },
+      { ...base, driver: "Bruno", tracking_code: "DEF", stop_state: "delivered", distance_km: 20 },
+    ];
+    const overrides = { [getDriverRateKey("Ana")]: 0.5 };
+    const result = calculateClosing(rows, 0.25, "fechamento.xlsx", overrides);
+
+    expect(result.drivers.find((driver) => driver.name === "Ana")).toMatchObject({
+      appliedRate: 0.5,
+      rateType: "Personalizado",
+      bonus: 5,
+    });
+    expect(result.drivers.find((driver) => driver.name === "Bruno")).toMatchObject({
+      appliedRate: 0.25,
+      rateType: "Padrão",
+      bonus: 5,
+    });
+    expect(result.totalBonus).toBe(10);
+  });
+
+  it("mantém o valor personalizado ao alterar o valor global", () => {
+    const rows = [
+      { ...base, driver: "Ana", stop_state: "delivered", distance_km: 10 },
+      { ...base, driver: "Bruno", tracking_code: "DEF", stop_state: "delivered", distance_km: 20 },
+    ];
+    const overrides = { [getDriverRateKey("  ANA ")]: 0.5 };
+    const result = calculateClosing(rows, 0.4, "fechamento.xlsx", overrides);
+
+    expect(result.drivers.find((driver) => driver.name === "Ana")?.bonus).toBe(5);
+    expect(result.drivers.find((driver) => driver.name === "Bruno")?.bonus).toBe(8);
+    expect(result.totalBonus).toBe(13);
+  });
+
   it("reconcilia os totais individuais com o total geral", () => {
     const result = calculateClosing([
       { ...base, driver: "Ana", stop_state: "delivered", distance_km: 1.005 },
@@ -90,7 +124,12 @@ describe("calculateClosing", () => {
   });
 
   it("gera o Excel com quatro abas, filtros e formatos definidos", () => {
-    const result = calculateClosing([{ ...base, stop_state: "delivered", distance_km: 12.6 }], 0.25);
+    const result = calculateClosing(
+      [{ ...base, stop_state: "delivered", distance_km: 12.6 }],
+      0.25,
+      "fechamento.xlsx",
+      { [getDriverRateKey("Ana")]: 0.5 },
+    );
     const workbook = buildClosingWorkbook(result, 0.25);
     expect(workbook.SheetNames).toEqual([
       "Resumo por Motoboy",
@@ -100,8 +139,23 @@ describe("calculateClosing", () => {
     ]);
     const summary = workbook.Sheets["Resumo por Motoboy"];
     expect(summary["!autofilter"]).toBeTruthy();
-    expect(summary.H2.z).toBe('"R$" #,##0.00');
+    expect(summary.G2.z).toBe('"R$" #,##0.00');
+    expect(summary.I2.z).toBe('"R$" #,##0.00');
     expect(summary.E2.z).toBe("#,##0.00");
-    expect(XLSX.utils.sheet_to_json(summary)).toHaveLength(1);
+    expect(XLSX.utils.sheet_to_json<Record<string, unknown>>(summary)).toEqual([
+      expect.objectContaining({
+        "Valor/km aplicado": 0.5,
+        "Tipo de valor": "Personalizado",
+      }),
+    ]);
+    expect(XLSX.utils.sheet_to_json<Record<string, unknown>>(workbook.Sheets["Detalhamento Diário"])[0]).toMatchObject({
+      "Valor/km aplicado": 0.5,
+      "Tipo de valor": "Personalizado",
+      Bônus: 6.3,
+    });
+    expect(XLSX.utils.sheet_to_json<Record<string, unknown>>(workbook.Sheets["Registros Considerados"])[0]).toMatchObject({
+      "Valor/km aplicado": 0.5,
+      "Tipo de valor": "Personalizado",
+    });
   });
 });

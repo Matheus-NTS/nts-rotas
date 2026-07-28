@@ -9,13 +9,14 @@ import {
 } from "lucide-react";
 import * as XLSX from "xlsx";
 import {
-  calculateClosing, exportClosing, formatBRL, formatDateBR, formatKm,
+  calculateClosing, exportClosing, formatBRL, formatDateBR, formatKm, getDriverRateKey,
   parseWorkbookRows, type ClosingResult, type DriverSummary, type ProcessedRecord,
 } from "../lib/closing";
 
 type SortKey = keyof Pick<DriverSummary, "name" | "deliveries" | "daysWorked" | "validKm" | "dailyAverage" | "bonus">;
 
 const RATE_KEY = "nts-rotas-rate";
+const DRIVER_RATES_KEY = "nts-rotas-driver-rates";
 const PROCESSING_STEPS = ["Lendo rotas", "Calculando quilômetros", "Calculando bônus", "Montando dashboard"];
 const pause = (duration: number) => new Promise((resolve) => window.setTimeout(resolve, duration));
 const formatAxisKm = (value: number) => `${new Intl.NumberFormat("pt-BR", {
@@ -31,6 +32,9 @@ export default function Home() {
   const [rate, setRate] = useState(0.25);
   const [draftRate, setDraftRate] = useState("0,25");
   const [rateModal, setRateModal] = useState(false);
+  const [driverRateModal, setDriverRateModal] = useState<DriverSummary | null>(null);
+  const [driverRateDraft, setDriverRateDraft] = useState("");
+  const [driverRates, setDriverRates] = useState<Record<string, number>>({});
   const [selected, setSelected] = useState<DriverSummary | null>(null);
   const [auditOpen, setAuditOpen] = useState(false);
   const [replaceModal, setReplaceModal] = useState(false);
@@ -46,10 +50,19 @@ export default function Home() {
     const stored = localStorage.getItem(RATE_KEY);
     const saved = stored === null ? Number.NaN : Number(stored);
     if (Number.isFinite(saved) && saved >= 0) setRate(saved);
+    try {
+      const parsed = JSON.parse(localStorage.getItem(DRIVER_RATES_KEY) ?? "{}") as Record<string, unknown>;
+      const validRates = Object.fromEntries(Object.entries(parsed).filter(([, value]) => (
+        typeof value === "number" && Number.isFinite(value) && value >= 0
+      )));
+      setDriverRates(validRates as Record<string, number>);
+    } catch {
+      setDriverRates({});
+    }
   }, []);
 
-  const recalculate = useCallback((base: ClosingResult, nextRate: number) => {
-    setResult(calculateClosing(base.sourceRows, nextRate, base.fileName));
+  const recalculate = useCallback((base: ClosingResult, nextRate: number, overrides: Record<string, number>) => {
+    setResult(calculateClosing(base.sourceRows, nextRate, base.fileName, overrides));
   }, []);
 
   const readFile = useCallback(async (file?: File) => {
@@ -68,7 +81,7 @@ export default function Home() {
       const rows = parseWorkbookRows(workbook);
       await pause(260);
       setProcessingStep(2);
-      const next = calculateClosing(rows, rate, file.name);
+      const next = calculateClosing(rows, rate, file.name, driverRates);
       await pause(260);
       setProcessingStep(3);
       await pause(300);
@@ -81,7 +94,7 @@ export default function Home() {
     } finally {
       setProcessingStep(-1);
     }
-  }, [rate]);
+  }, [driverRates, rate]);
 
   const handleExport = () => {
     if (!result) return;
@@ -104,8 +117,34 @@ export default function Home() {
     if (!Number.isFinite(parsed) || parsed < 0) return;
     setRate(parsed);
     localStorage.setItem(RATE_KEY, String(parsed));
-    if (result) recalculate(result, parsed);
+    if (result) recalculate(result, parsed, driverRates);
     setRateModal(false);
+  };
+
+  const openDriverRate = (driver: DriverSummary) => {
+    setDriverRateModal(driver);
+    setDriverRateDraft(driver.appliedRate.toLocaleString("pt-BR", { minimumFractionDigits: 2 }));
+  };
+
+  const saveDriverRate = () => {
+    if (!driverRateModal || !result) return;
+    const parsed = Number(driverRateDraft.replace(/\./g, "").replace(",", "."));
+    if (!Number.isFinite(parsed) || parsed < 0) return;
+    const nextRates = { ...driverRates, [getDriverRateKey(driverRateModal.name)]: parsed };
+    setDriverRates(nextRates);
+    localStorage.setItem(DRIVER_RATES_KEY, JSON.stringify(nextRates));
+    recalculate(result, rate, nextRates);
+    setDriverRateModal(null);
+  };
+
+  const useGlobalDriverRate = () => {
+    if (!driverRateModal || !result) return;
+    const nextRates = { ...driverRates };
+    delete nextRates[getDriverRateKey(driverRateModal.name)];
+    setDriverRates(nextRates);
+    localStorage.setItem(DRIVER_RATES_KEY, JSON.stringify(nextRates));
+    recalculate(result, rate, nextRates);
+    setDriverRateModal(null);
   };
 
   const sortedDrivers = useMemo(() => {
@@ -174,6 +213,8 @@ export default function Home() {
   }
 
   const audit = result.audit;
+  const personalizedCount = result.drivers.filter((driver) => driver.rateType === "Personalizado").length;
+  const activeSelected = selected ? result.drivers.find((driver) => driver.name === selected.name) ?? selected : null;
   return (
     <main className="min-h-screen bg-[#f4f7fb] text-[#10223e]">
       <Topbar rate={rate} onEdit={() => { setDraftRate(rate.toLocaleString("pt-BR", { minimumFractionDigits: 2 })); setRateModal(true); }} />
@@ -199,7 +240,7 @@ export default function Home() {
 
         <section className="metrics-grid">
           <Metric icon={<Route />} label="Quilometragem válida" value={formatKm(result.totalKm)} helper={`${audit.included.toLocaleString("pt-BR")} trechos incluídos`} />
-          <Metric icon={<span className="currency-icon">R$</span>} label="Bônus total" value={formatBRL(result.totalBonus)} helper={`${formatBRL(rate)} por km`} accent />
+          <Metric icon={<span className="currency-icon">R$</span>} label="Bônus total" value={formatBRL(result.totalBonus)} helper={personalizedCount ? `${personalizedCount} valor(es) personalizado(s)` : `${formatBRL(rate)} por km`} accent />
           <Metric icon={<Users />} label="Motoboys" value={String(result.drivers.length)} helper="com km válida" />
           <Metric icon={<Bike />} label="Entregas concluídas" value={result.totalDeliveries.toLocaleString("pt-BR")} helper="paradas entregues" />
           <Metric icon={<CalendarDays />} label="Período analisado" value={result.periodLabel} helper={`${result.workDays} dias com rota`} wide />
@@ -264,7 +305,12 @@ export default function Home() {
                   <td>{driver.daysWorked.toLocaleString("pt-BR")}</td>
                   <td className="numeric-cell font-semibold text-[#172943]">{formatKm(driver.validKm)}</td>
                   <td className="numeric-cell">{formatKm(driver.dailyAverage)}</td>
-                  <td className="numeric-cell">{formatBRL(rate)}</td>
+                  <td className="numeric-cell rate-cell">
+                    <button className="driver-rate-trigger" onClick={(event) => { event.stopPropagation(); openDriverRate(driver); }} aria-label={`Editar valor por quilômetro de ${driver.name}`}>
+                      <span>{formatBRL(driver.appliedRate)}</span>
+                      <small className={driver.rateType === "Personalizado" ? "rate-badge custom" : "rate-badge"}>{driver.rateType}</small>
+                    </button>
+                  </td>
                   <td className="numeric-cell font-semibold text-[#0c60cb]">{formatBRL(driver.bonus)}</td>
                   <td><ChevronRight size={17} /></td>
                 </tr>
@@ -289,8 +335,16 @@ export default function Home() {
         </section>
       </div>
       {rateModal && <RateModal value={draftRate} onChange={setDraftRate} onCancel={() => setRateModal(false)} onApply={applyRate} />}
+      {driverRateModal && <DriverRateModal
+        driver={driverRateModal}
+        value={driverRateDraft}
+        onChange={setDriverRateDraft}
+        onCancel={() => setDriverRateModal(null)}
+        onSave={saveDriverRate}
+        onUseGlobal={useGlobalDriverRate}
+      />}
       {replaceModal && <ReplaceModal onCancel={() => setReplaceModal(false)} onConfirm={replaceFile} />}
-      {selected && <DriverDrawer driver={selected} rate={rate} records={result.includedRecords.filter((r) => r.driver === selected.name)} onClose={() => setSelected(null)} />}
+      {activeSelected && <DriverDrawer driver={activeSelected} records={result.includedRecords.filter((record) => record.driver === activeSelected.name)} onClose={() => setSelected(null)} />}
       {exportSuccess && <div className="success-toast" role="status"><CheckCircle2 size={20} /><span>Fechamento exportado com sucesso.</span></div>}
     </main>
   );
@@ -378,11 +432,45 @@ function RateModal({ value, onChange, onCancel, onApply }: { value: string; onCh
   </div></div>;
 }
 
-function DriverDrawer({ driver, rate, records, onClose }: { driver: DriverSummary; rate: number; records: ProcessedRecord[]; onClose: () => void }) {
+function DriverRateModal({ driver, value, onChange, onCancel, onSave, onUseGlobal }: {
+  driver: DriverSummary;
+  value: string;
+  onChange: (value: string) => void;
+  onCancel: () => void;
+  onSave: () => void;
+  onUseGlobal: () => void;
+}) {
+  return <div className="modal-backdrop" onMouseDown={onCancel}>
+    <div className="modal-card driver-rate-modal" onMouseDown={(event) => event.stopPropagation()} role="dialog" aria-modal="true" aria-labelledby="driver-rate-title">
+      <div className="flex items-start justify-between gap-4">
+        <div className="min-w-0">
+          <h2 id="driver-rate-title">Valor por quilômetro</h2>
+          <p className="driver-rate-name" title={driver.name}>{driver.name}</p>
+        </div>
+        <button className="icon-btn shrink-0" onClick={onCancel} aria-label="Fechar edição"><X size={19} /></button>
+      </div>
+      <label className="money-field">
+        <span>Valor personalizado por km</span>
+        <div><b>R$</b><input autoFocus inputMode="decimal" value={value} onChange={(event) => onChange(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") onSave(); }} /></div>
+      </label>
+      <div className="driver-rate-actions">
+        {driver.rateType === "Personalizado"
+          ? <button className="rate-reset-btn" onClick={onUseGlobal}>Usar valor padrão</button>
+          : <span className="rate-default-hint">Atualmente usa o valor padrão.</span>}
+        <div className="flex gap-3">
+          <button className="secondary-btn" onClick={onCancel}>Cancelar</button>
+          <button className="primary-btn" onClick={onSave}>Salvar</button>
+        </div>
+      </div>
+    </div>
+  </div>;
+}
+
+function DriverDrawer({ driver, records, onClose }: { driver: DriverSummary; records: ProcessedRecord[]; onClose: () => void }) {
   return <div className="drawer-backdrop" onMouseDown={onClose}><aside className="drawer" onMouseDown={(e) => e.stopPropagation()}>
     <div className="drawer-header"><div><span>Detalhamento do motoboy</span><h2>{driver.name}</h2></div><button className="icon-btn" onClick={onClose} aria-label="Fechar detalhamento"><X size={20} /></button></div>
     <div className="drawer-body">
-      <div className="drawer-metrics"><div><span>Km válidos</span><strong>{formatKm(driver.validKm)}</strong></div><div className="blue"><span>Bônus</span><strong>{formatBRL(driver.bonus)}</strong></div><div><span>Entregas</span><strong>{driver.deliveries}</strong></div><div><span>Dias trabalhados</span><strong>{driver.daysWorked}</strong></div><div><span>Média diária</span><strong>{formatKm(driver.dailyAverage)}</strong></div><div><span>Valor/km</span><strong>{formatBRL(rate)}</strong></div></div>
+      <div className="drawer-metrics"><div><span>Km válidos</span><strong>{formatKm(driver.validKm)}</strong></div><div className="blue"><span>Bônus</span><strong>{formatBRL(driver.bonus)}</strong></div><div><span>Entregas</span><strong>{driver.deliveries}</strong></div><div><span>Dias trabalhados</span><strong>{driver.daysWorked}</strong></div><div><span>Média diária</span><strong>{formatKm(driver.dailyAverage)}</strong></div><div><span>Valor/km · {driver.rateType}</span><strong>{formatBRL(driver.appliedRate)}</strong></div></div>
       <h3>Evolução diária</h3>
       <div className="h-56"><ResponsiveContainer width="100%" height="100%"><AreaChart data={driver.daily}><CartesianGrid stroke="#e8edf4" vertical={false} /><XAxis dataKey="label" tick={{ fontSize: 11 }} axisLine={false} tickLine={false} /><YAxis tick={{ fontSize: 11 }} axisLine={false} tickLine={false} width={38} /><Tooltip formatter={(v) => [formatKm(Number(v)), "Quilometragem válida"]} labelFormatter={(label) => `Data: ${label}`} /><Area type="monotone" dataKey="km" stroke="#1267d6" strokeWidth={2} fill="#dcecff" /></AreaChart></ResponsiveContainer></div>
       <h3 className="mt-7">Registros considerados</h3>

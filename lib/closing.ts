@@ -21,6 +21,8 @@ export type DriverSummary = {
   daysWorked: number;
   validKm: number;
   dailyAverage: number;
+  appliedRate: number;
+  rateType: "Padrão" | "Personalizado";
   bonus: number;
   daily: { dateKey: string; label: string; km: number }[];
 };
@@ -66,7 +68,7 @@ export function normalizeDriverName(value: unknown): string {
   return asText(value).replace(/\s+/g, " ");
 }
 
-function driverKey(value: unknown): string {
+export function getDriverRateKey(value: unknown): string {
   return normalizeDriverName(value)
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
@@ -119,7 +121,12 @@ function resolveSchema(rows: RawRow[]) {
   };
 }
 
-export function calculateClosing(rows: RawRow[], rate: number, fileName = "fechamento.xlsx"): ClosingResult {
+export function calculateClosing(
+  rows: RawRow[],
+  rate: number,
+  fileName = "fechamento.xlsx",
+  rateOverrides: Record<string, number> = {},
+): ClosingResult {
   if (!rows.length) throw new Error("O Excel está vazio.");
   const schema = resolveSchema(rows);
   const audit = { included: 0, totalExcluded: 0, statusExcluded: 0, emptyDistance: 0, invalidDistance: 0, negativeDistance: 0, duplicateRecords: 0 };
@@ -134,7 +141,7 @@ export function calculateClosing(rows: RawRow[], rate: number, fileName = "fecha
     const distance = parseDistance(distanceValue);
     const date = parseDate(schema.dateColumn ? row[schema.dateColumn] : null);
     const normalizedDriver = normalizeDriverName(row.driver) || "Motoboy não informado";
-    const normalizedDriverKey = driverKey(normalizedDriver);
+    const normalizedDriverKey = getDriverRateKey(normalizedDriver);
     const preferredDriver = preferredDriverNames.get(normalizedDriverKey) ?? normalizedDriver;
     preferredDriverNames.set(normalizedDriverKey, preferredDriver);
     const record: ProcessedRecord = {
@@ -204,6 +211,8 @@ export function calculateClosing(rows: RawRow[], rate: number, fileName = "fecha
     const exactKm = records.reduce((sum, record) => sum + record.distance, 0);
     const validKm = round(exactKm);
     const deliveries = new Set(records.filter((record) => record.trackingCode).map((record) => record.trackingCode)).size;
+    const override = rateOverrides[getDriverRateKey(name)];
+    const hasCustomRate = Number.isFinite(override) && override >= 0;
     kmRemainders.set(name, exactKm - validKm);
     return {
       name,
@@ -211,6 +220,8 @@ export function calculateClosing(rows: RawRow[], rate: number, fileName = "fecha
       daysWorked: days.size,
       validKm,
       dailyAverage: round(days.size ? validKm / days.size : 0),
+      appliedRate: hasCustomRate ? override : rate,
+      rateType: hasCustomRate ? "Personalizado" as const : "Padrão" as const,
       bonus: 0,
       daily,
     };
@@ -231,11 +242,11 @@ export function calculateClosing(rows: RawRow[], rate: number, fileName = "fecha
 
   const bonusRemainders = new Map<string, number>();
   drivers.forEach((driver) => {
-    const exactBonus = driver.validKm * rate;
+    const exactBonus = driver.validKm * driver.appliedRate;
     driver.bonus = roundMoney(exactBonus);
     bonusRemainders.set(driver.name, exactBonus - driver.bonus);
   });
-  const totalBonus = roundMoney(totalKm * rate);
+  const totalBonus = roundMoney(drivers.reduce((sum, driver) => sum + driver.validKm * driver.appliedRate, 0));
   const roundedDriverBonusTotal = roundMoney(drivers.reduce((sum, driver) => sum + driver.bonus, 0));
   const roundingDifference = roundMoney(totalBonus - roundedDriverBonusTotal);
   if (drivers.length && roundingDifference !== 0) {
@@ -290,20 +301,27 @@ export function exportClosing(result: ClosingResult, rate: number) {
 
 export function buildClosingWorkbook(result: ClosingResult, rate: number) {
   const workbook = XLSX.utils.book_new();
+  const driverByName = new Map(result.drivers.map((driver) => [driver.name, driver]));
   const summary = result.drivers.map((driver, index) => ({
     Posição: index + 1, Motoboy: driver.name, "Entregas concluídas": driver.deliveries,
     "Dias trabalhados": driver.daysWorked, "Quilômetros válidos": driver.validKm,
-    "Média diária": driver.dailyAverage, "Valor por quilômetro": rate, Bônus: driver.bonus,
+    "Média diária": driver.dailyAverage, "Valor/km aplicado": driver.appliedRate,
+    "Tipo de valor": driver.rateType, Bônus: driver.bonus,
   }));
   const daily = result.drivers.flatMap((driver) => driver.daily.map((day) => ({
     Data: day.dateKey ? formatDateBR(new Date(`${day.dateKey}T12:00:00`)) : "", Motoboy: driver.name,
-    "Quilômetros válidos": day.km, "Valor por quilômetro": rate, Bônus: roundMoney(day.km * rate),
+    "Quilômetros válidos": day.km, "Valor/km aplicado": driver.appliedRate,
+    "Tipo de valor": driver.rateType, Bônus: roundMoney(day.km * driver.appliedRate),
   })));
-  const considered = result.includedRecords.map((record) => ({
-    Linha: record.rowNumber, Data: formatDateBR(record.date), Motoboy: record.driver, Rota: record.route,
-    Parada: record.stopNumber ?? "Trecho de base", Status: record.status,
-    "Distância (km)": record.distance, "Código de rastreio": record.trackingCode,
-  }));
+  const considered = result.includedRecords.map((record) => {
+    const driver = driverByName.get(record.driver);
+    return {
+      Linha: record.rowNumber, Data: formatDateBR(record.date), Motoboy: record.driver, Rota: record.route,
+      Parada: record.stopNumber ?? "Trecho de base", Status: record.status,
+      "Distância (km)": record.distance, "Código de rastreio": record.trackingCode,
+      "Valor/km aplicado": driver?.appliedRate ?? rate, "Tipo de valor": driver?.rateType ?? "Padrão",
+    };
+  });
   const disregarded = result.excludedRecords.map((record) => ({
     Linha: record.rowNumber, Data: formatDateBR(record.date), Motoboy: record.driver, Rota: record.route,
     Status: record.status, "Distância original": record.original.distance_km ?? "", Motivo: record.exclusionReason,
@@ -323,7 +341,7 @@ export function buildClosingWorkbook(result: ClosingResult, rate: number) {
       const cell = worksheet[address];
       if (cell.t === "d") cell.z = "dd/mm/yyyy";
       const header = worksheet[`${address.replace(/\d+/, "")}1`]?.v;
-      if (header === "Bônus" || header === "Valor por quilômetro") cell.z = '"R$" #,##0.00';
+      if (header === "Bônus" || header === "Valor/km aplicado") cell.z = '"R$" #,##0.00';
       if (String(header).includes("Quilômetros") || header === "Média diária" || header === "Distância (km)") cell.z = '#,##0.00';
     });
     XLSX.utils.book_append_sheet(workbook, worksheet, name as string);
